@@ -1,11 +1,10 @@
 import os, json, uuid, time, secrets, hashlib, hmac, mimetypes
 from functools import wraps
 from flask import Flask, request, jsonify, session, send_from_directory, send_file, abort
-from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-# Persistent storage paths
+# Set DATA_DIR and UPLOADS_DIR to persistent storage paths when deploying.
 DATA = os.environ.get("DATA_DIR", os.path.join(BASE, "data"))
 UPLOADS = os.environ.get("UPLOADS_DIR", os.path.join(BASE, "uploads"))
 os.makedirs(DATA, exist_ok=True)
@@ -13,27 +12,23 @@ os.makedirs(UPLOADS, exist_ok=True)
 DB_FILE = os.path.join(DATA, "store.json")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "dbibi698@gmail.com").lower()
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me-before-deploying")
-
-# Agora Configuration
-AGORA_APP_ID = os.environ.get("AGORA_APP_ID", "3aa53f15369d4c6abf8d4a0667dcde47")
-
 ALLOWED = {"mp4", "webm", "mov", "m4v", "jpg", "jpeg", "png", "webp", "gif", "mp3", "wav", "ogg"}
 
 app = Flask(__name__, static_folder="static")
-CORS(app)
 app.secret_key = SECRET_KEY
-app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB limit
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB demo limit
 
 def load_store():
     if not os.path.exists(DB_FILE):
-        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": [], "streams": {}}
+        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": [], "live_rooms": {}, "live_chat": {}}
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            data.setdefault("streams", {})
-            return data
+        data.setdefault("live_rooms", {})
+        data.setdefault("live_chat", {})
+        return data
     except (ValueError, OSError):
-        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": [], "streams": {}}
+        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": [], "live_rooms": {}, "live_chat": {}}
 
 def save_store(data):
     temp = DB_FILE + ".tmp"
@@ -58,6 +53,7 @@ def current_user(store=None):
     email = session.get("email")
     user = store["users"].get(email) if email else None
     if user:
+        # Admin role is granted only to the configured administrator email.
         user["is_admin"] = user.get("email", "").lower() == ADMIN_EMAIL
     return user
 
@@ -95,110 +91,10 @@ def video_public(v, store):
 def index():
     return send_from_directory("static", "index.html")
 
-# ----------------- AGORA / STREAM & SCREEN SHARE APIS -----------------
-
-@app.get("/api/agora/config")
-def agora_config():
-    """Returns Agora configuration and supported streaming capabilities."""
-    return jsonify(
-        app_id=AGORA_APP_ID,
-        features={
-            "camera": True,
-            "microphone": True,
-            "screen_share": True
-        }
-    )
-
-@app.post("/api/stream/start")
-@login_required
-def start_stream():
-    """Start a live stream room with Camera or Screen Share mode."""
-    s = load_store()
-    u = current_user(s)
-    if u.get("blocked"):
-        return jsonify(error="Account unavailable."), 403
-
-    d = request.get_json(silent=True) or {}
-    stream_type = d.get("stream_type", "camera")  # 'camera' or 'screen_share'
-    title = str(d.get("title", f"{u['name']}'s Live Stream")).strip()[:120]
-    channel_name = f"stream_{uuid.uuid4().hex[:12]}"
-
-    stream_info = {
-        "channel": channel_name,
-        "title": title,
-        "type": stream_type,
-        "host_email": u["email"],
-        "host_name": u["name"],
-        "host_avatar": u.get("avatar", ""),
-        "created_at": int(time.time()),
-        "status": "live"
-    }
-
-    s.setdefault("streams", {})[channel_name] = stream_info
-
-    # Notify subscribers about the live stream
-    for email, user in s["users"].items():
-        if email != u["email"] and u["email"] in user.get("subscriptions", []):
-            s["notifications"].append({
-                "id": uuid.uuid4().hex,
-                "to": email,
-                "text": f"🔴 {u['name']} is LIVE ({stream_type}): {title}",
-                "channel": channel_name,
-                "created_at": int(time.time()),
-                "read": False
-            })
-
-    save_store(s)
-    return jsonify(
-        success=True,
-        channel=channel_name,
-        app_id=AGORA_APP_ID,
-        stream=stream_info
-    )
-
-@app.get("/api/streams")
-def list_streams():
-    """Get all active live streams."""
-    s = load_store()
-    active_streams = [
-        stream for stream in s.get("streams", {}).values() 
-        if stream.get("status") == "live"
-    ]
-    active_streams.sort(key=lambda x: x.get("created_at", 0), reverse=True)
-    return jsonify(streams=active_streams)
-
-@app.get("/api/stream/<channel_name>")
-def get_stream(channel_name):
-    """View details of a specific live stream channel."""
-    s = load_store()
-    stream = s.get("streams", {}).get(channel_name)
-    if not stream or stream.get("status") != "live":
-        return jsonify(error="Stream not found or ended."), 404
-    return jsonify(stream=stream, app_id=AGORA_APP_ID)
-
-@app.post("/api/stream/<channel_name>/end")
-@login_required
-def end_stream(channel_name):
-    """End a live stream."""
-    s = load_store()
-    u = current_user(s)
-    stream = s.get("streams", {}).get(channel_name)
-    if not stream:
-        return jsonify(error="Stream not found."), 404
-    if stream.get("host_email") != u["email"] and not u.get("is_admin"):
-        return jsonify(error="Only host can end the stream."), 403
-
-    stream["status"] = "ended"
-    stream["ended_at"] = int(time.time())
-    save_store(s)
-    return jsonify(success=True, message="Stream ended successfully.")
-
-# ----------------- USER & VIDEO APIS -----------------
-
 @app.get("/api/me")
 def me():
     s = load_store()
-    return jsonify(user=public_user(current_user(s)), admin_email=ADMIN_EMAIL, agora_app_id=AGORA_APP_ID)
+    return jsonify(user=public_user(current_user(s)), admin_email=ADMIN_EMAIL)
 
 @app.post("/api/register")
 def register():
@@ -300,6 +196,7 @@ def media(filename):
 @app.get("/api/video/<vid>/download")
 @login_required
 def download_own_video(vid):
+    """Download only the signed-in creator's own upload as an attachment."""
     s = load_store(); u = current_user(s); v = s["videos"].get(vid)
     if not v or v.get("owner") != u.get("email"):
         return jsonify(error="For creator safety, you can download only your own uploads."), 403
@@ -373,8 +270,10 @@ def channel(email):
     return jsonify(channel=public_user(u),videos=vids,subscribers=sum(email in x.get("subscriptions",[]) for x in s["users"].values()),
                    subscribed=bool(current_user(s) and email in current_user(s).get("subscriptions",[])))
 
+
 @app.get("/api/channels")
 def channels():
+    """Search public channels by channel name or email."""
     s = load_store()
     q = request.args.get("q", "").strip().lower()
     rows = []
@@ -397,6 +296,7 @@ def channels():
 @app.patch("/api/video/<vid>")
 @login_required
 def edit_own_video(vid):
+    """Edit metadata for a video owned by the signed-in user."""
     s = load_store()
     u = current_user(s)
     v = s["videos"].get(vid)
@@ -423,6 +323,7 @@ def edit_own_video(vid):
 @app.delete("/api/video/<vid>")
 @login_required
 def delete_own_video(vid):
+    """Delete a video owned by the signed-in user."""
     s = load_store()
     u = current_user(s)
     v = s["videos"].get(vid)
@@ -470,4 +371,125 @@ def notifications():
 
 @app.post("/api/notifications/read")
 @login_required
-def read_noti
+def read_notifications():
+    s=load_store(); email=current_user(s)["email"]
+    for n in s["notifications"]:
+        if n.get("to")==email: n["read"]=True
+    save_store(s); return jsonify(ok=True)
+
+@app.get("/api/history")
+@login_required
+def history():
+    s=load_store(); u=current_user(s)
+    return jsonify(videos=[video_public(s["videos"][i],s) for i in u.get("history",[]) if i in s["videos"]])
+
+@app.get("/api/admin/overview")
+@admin_required
+def admin_overview():
+    s=load_store()
+    return jsonify(users=[public_user(u) for u in s["users"].values()],
+                   videos=[video_public(v,s) for v in s["videos"].values()],
+                   total_views=sum(v.get("views",0) for v in s["videos"].values()))
+
+@app.post("/api/admin/user/<email>/block")
+@admin_required
+def admin_block(email):
+    s=load_store(); u=s["users"].get(email.lower())
+    if not u: return jsonify(error="User not found."),404
+    if u.get("is_admin"): return jsonify(error="Cannot block the admin account."),400
+    u["blocked"]=not u.get("blocked",False); save_store(s)
+    return jsonify(blocked=u["blocked"])
+
+@app.post("/api/admin/video/<vid>/restrict")
+@admin_required
+def admin_restrict(vid):
+    s=load_store(); v=s["videos"].get(vid)
+    if not v: return jsonify(error="Video not found."),404
+    v["restricted"]=not v.get("restricted",False); save_store(s)
+    return jsonify(restricted=v["restricted"])
+
+@app.delete("/api/admin/video/<vid>")
+@admin_required
+def admin_delete_video(vid):
+    s=load_store(); v=s["videos"].pop(vid,None)
+    if not v: return jsonify(error="Video not found."),404
+    for name in (v.get("filename"),v.get("thumbnail")):
+        if name:
+            try: os.remove(os.path.join(UPLOADS,name))
+            except OSError: pass
+    s["comments"].pop(vid,None); save_store(s); return jsonify(ok=True)
+
+@app.get("/api/admin/events")
+@admin_required
+def admin_events():
+    s=load_store()
+    return jsonify(events=[{"email":u["email"],"name":u["name"],"blocked":u.get("blocked",False)} for u in s["users"].values()],
+                   uploads=[{"id":v["id"],"owner":v["owner"],"title":v["title"],"created_at":v["created_at"]} for v in s["videos"].values()])
+
+@app.get("/api/live")
+def live_list():
+    s = load_store()
+    rooms = []
+    for room in s.setdefault("live_rooms", {}).values():
+        owner = s["users"].get(room.get("owner"), {})
+        if room.get("active") and owner and not owner.get("blocked"):
+            rooms.append({**room, "owner_name": owner.get("name", "Creator"), "owner_avatar": owner.get("avatar", "")})
+    rooms.sort(key=lambda r: r.get("started_at", 0), reverse=True)
+    return jsonify(streams=rooms)
+
+@app.post("/api/live/start")
+@login_required
+def live_start():
+    s = load_store(); u = current_user(s)
+    if u.get("blocked"): return jsonify(error="Account unavailable."), 403
+    d = request.get_json(silent=True) or {}
+    title = str(d.get("title", "")).strip()[:120]
+    channel = str(d.get("channel", "")).strip()[:80]
+    if not title or not channel: return jsonify(error="Stream title and channel are required."), 400
+    rooms = s.setdefault("live_rooms", {})
+    # A creator may only have one active stream at a time.
+    for old in rooms.values():
+        if old.get("owner") == u["email"] and old.get("active"):
+            old["active"] = False
+    room = {"channel": channel, "owner": u["email"], "title": title, "active": True,
+            "started_at": int(time.time()), "viewers": 0, "mode": "camera" if d.get("mode") != "screen" else "screen"}
+    rooms[channel] = room
+    s.setdefault("live_chat", {}).setdefault(channel, [])
+    save_store(s)
+    return jsonify(stream={**room, "owner_name": u["name"], "owner_avatar": u.get("avatar", "")})
+
+@app.post("/api/live/<channel>/stop")
+@login_required
+def live_stop(channel):
+    s = load_store(); u = current_user(s); room = s.setdefault("live_rooms", {}).get(channel)
+    if not room: return jsonify(error="Live stream not found."), 404
+    if room.get("owner") != u["email"] and not u.get("is_admin"): return jsonify(error="Only the host can end this stream."), 403
+    room["active"] = False; room["ended_at"] = int(time.time()); save_store(s)
+    return jsonify(ok=True)
+
+@app.get("/api/live/<channel>/chat")
+def live_chat_get(channel):
+    s = load_store()
+    if channel not in s.setdefault("live_rooms", {}): return jsonify(error="Live stream not found."), 404
+    return jsonify(messages=s.setdefault("live_chat", {}).get(channel, [])[-100:])
+
+@app.post("/api/live/<channel>/chat")
+@login_required
+def live_chat_post(channel):
+    s = load_store(); u = current_user(s)
+    room = s.setdefault("live_rooms", {}).get(channel)
+    if not room or not room.get("active"): return jsonify(error="This stream has ended."), 404
+    d = request.get_json(silent=True) or {}; body = str(d.get("text", "")).strip()[:500]
+    if not body: return jsonify(error="Write a message first."), 400
+    msg = {"id": uuid.uuid4().hex, "name": u.get("name", "Viewer"), "email": u["email"], "text": body, "created_at": int(time.time())}
+    rows = s.setdefault("live_chat", {}).setdefault(channel, []); rows.append(msg)
+    s["live_chat"][channel] = rows[-300:]
+    save_store(s)
+    return jsonify(message=msg)
+
+@app.get("/api/health")
+def health():
+    return jsonify(ok=True, app="Murshid Developer", storage="JSON file", admin_email=ADMIN_EMAIL)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT","5000")), debug=False, threaded=True)

@@ -75,3 +75,16 @@ Shorts sound note: browsers may block autoplay with sound. The player first trie
 - Long-video player includes native fullscreen, speed control, caption text toggle, and working like/dislike counts.
 - Video download is restricted to the signed-in creator's own uploaded file; it is saved by the browser to the normal Downloads folder. This project does not integrate third-party downloaders for other creators' videos.
 - Quality choices are honestly limited to the uploaded source: this demo does not transcode video into separate 1080p/720p/480p versions.
+
+
+## Live streaming and mobile navigation
+The interface now includes a mobile-style bottom navigation and a Live page. Sign in, enter a stream title, then choose **Go live with camera** or **Share screen live**. Viewers can join a listed live room and chat in real time through the app's Flask chat endpoint. Agora audio/video is delivered through the Agora Web SDK.
+
+**Agora setup:** The App ID provided for this project is configured in `static/app.js`. Camera/microphone and screen sharing require browser permissions; screen sharing requires HTTPS or localhost. This demo joins with a null RTC token, which only works if token authentication is disabled for the Agora project. For production, use a server-side endpoint to generate short-lived RTC tokens and do not put the App Certificate in frontend JavaScript.
+
+Run manually from the project folder:
+```bash
+python -m pip install -r requirements.txt
+python app.py
+```
+Then open `http://127.0.0.1:5000`.

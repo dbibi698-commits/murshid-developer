@@ -20,3 +20,10 @@
 API endpoints are documented for developers; not every endpoint has a dedicated frontend control yet.
 
 - Shorts three-dot menu: Description with view count, Save to playlist, Ambient mode, captions toggle, fullscreen, playback speed, Not interested, hide channel, report, and feedback.
+
+
+## Live streaming update
+- Mobile-style fixed bottom navigation: Home, Shorts, Create, Live, You, More.
+- Agora Web SDK live broadcast supports camera/microphone or screen share, plus a server-backed live room list and polling live chat.
+- The supplied Agora App ID is configured in `static/app.js`. For demo use, the Agora project must have token authentication disabled. For production, enable authentication and implement a server-side short-lived RTC token endpoint; never expose an App Certificate in client code.
+- Screen capture requires HTTPS or localhost and browser permission.

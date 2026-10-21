@@ -1,6 +1,7 @@
 import os, json, uuid, time, secrets, hashlib, hmac, mimetypes
 from functools import wraps
 from flask import Flask, request, jsonify, session, send_from_directory, send_file, abort
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +20,7 @@ AGORA_APP_ID = os.environ.get("AGORA_APP_ID", "3aa53f15369d4c6abf8d4a0667dcde47"
 ALLOWED = {"mp4", "webm", "mov", "m4v", "jpg", "jpeg", "png", "webp", "gif", "mp3", "wav", "ogg"}
 
 app = Flask(__name__, static_folder="static")
+CORS(app)
 app.secret_key = SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB limit
 
@@ -93,29 +95,38 @@ def video_public(v, store):
 def index():
     return send_from_directory("static", "index.html")
 
-# ----------------- AGORA / STREAM APIS -----------------
+# ----------------- AGORA / STREAM & SCREEN SHARE APIS -----------------
 
 @app.get("/api/agora/config")
 def agora_config():
-    """Returns the Agora App ID for client-side streaming SDK initialization."""
-    return jsonify(app_id=AGORA_APP_ID)
+    """Returns Agora configuration and supported streaming capabilities."""
+    return jsonify(
+        app_id=AGORA_APP_ID,
+        features={
+            "camera": True,
+            "microphone": True,
+            "screen_share": True
+        }
+    )
 
 @app.post("/api/stream/start")
 @login_required
 def start_stream():
-    """Start a live stream room."""
+    """Start a live stream room with Camera or Screen Share mode."""
     s = load_store()
     u = current_user(s)
     if u.get("blocked"):
         return jsonify(error="Account unavailable."), 403
 
     d = request.get_json(silent=True) or {}
+    stream_type = d.get("stream_type", "camera")  # 'camera' or 'screen_share'
     title = str(d.get("title", f"{u['name']}'s Live Stream")).strip()[:120]
     channel_name = f"stream_{uuid.uuid4().hex[:12]}"
 
     stream_info = {
         "channel": channel_name,
         "title": title,
+        "type": stream_type,
         "host_email": u["email"],
         "host_name": u["name"],
         "host_avatar": u.get("avatar", ""),
@@ -131,7 +142,7 @@ def start_stream():
             s["notifications"].append({
                 "id": uuid.uuid4().hex,
                 "to": email,
-                "text": f"🔴 {u['name']} is LIVE now: {title}",
+                "text": f"🔴 {u['name']} is LIVE ({stream_type}): {title}",
                 "channel": channel_name,
                 "created_at": int(time.time()),
                 "read": False
@@ -459,14 +470,4 @@ def notifications():
 
 @app.post("/api/notifications/read")
 @login_required
-def read_notifications():
-    s=load_store(); email=current_user(s)["email"]
-    for n in s["notifications"]:
-        if n.get("to")==email: n["read"]=True
-    save_store(s); return jsonify(ok=True)
-
-@app.get("/api/history")
-@login_required
-def history():
-    s=load_store(); u=current_user(s)
-    return jsonify(videos=[video_public(s["videos"][i],s)
+def read_noti

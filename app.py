@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify, session, send_from_directory, send_fi
 from werkzeug.utils import secure_filename
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-# Set DATA_DIR and UPLOADS_DIR to persistent storage paths when deploying.
+# Persistent storage paths
 DATA = os.environ.get("DATA_DIR", os.path.join(BASE, "data"))
 UPLOADS = os.environ.get("UPLOADS_DIR", os.path.join(BASE, "uploads"))
 os.makedirs(DATA, exist_ok=True)
@@ -12,20 +12,26 @@ os.makedirs(UPLOADS, exist_ok=True)
 DB_FILE = os.path.join(DATA, "store.json")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "dbibi698@gmail.com").lower()
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me-before-deploying")
+
+# Agora Configuration
+AGORA_APP_ID = os.environ.get("AGORA_APP_ID", "3aa53f15369d4c6abf8d4a0667dcde47")
+
 ALLOWED = {"mp4", "webm", "mov", "m4v", "jpg", "jpeg", "png", "webp", "gif", "mp3", "wav", "ogg"}
 
 app = Flask(__name__, static_folder="static")
 app.secret_key = SECRET_KEY
-app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB demo limit
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB limit
 
 def load_store():
     if not os.path.exists(DB_FILE):
-        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": []}
+        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": [], "streams": {}}
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            data.setdefault("streams", {})
+            return data
     except (ValueError, OSError):
-        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": []}
+        return {"users": {}, "videos": {}, "comments": {}, "notifications": [], "events": [], "streams": {}}
 
 def save_store(data):
     temp = DB_FILE + ".tmp"
@@ -50,7 +56,6 @@ def current_user(store=None):
     email = session.get("email")
     user = store["users"].get(email) if email else None
     if user:
-        # Admin role is granted only to the configured administrator email.
         user["is_admin"] = user.get("email", "").lower() == ADMIN_EMAIL
     return user
 
@@ -88,10 +93,101 @@ def video_public(v, store):
 def index():
     return send_from_directory("static", "index.html")
 
+# ----------------- AGORA / STREAM APIS -----------------
+
+@app.get("/api/agora/config")
+def agora_config():
+    """Returns the Agora App ID for client-side streaming SDK initialization."""
+    return jsonify(app_id=AGORA_APP_ID)
+
+@app.post("/api/stream/start")
+@login_required
+def start_stream():
+    """Start a live stream room."""
+    s = load_store()
+    u = current_user(s)
+    if u.get("blocked"):
+        return jsonify(error="Account unavailable."), 403
+
+    d = request.get_json(silent=True) or {}
+    title = str(d.get("title", f"{u['name']}'s Live Stream")).strip()[:120]
+    channel_name = f"stream_{uuid.uuid4().hex[:12]}"
+
+    stream_info = {
+        "channel": channel_name,
+        "title": title,
+        "host_email": u["email"],
+        "host_name": u["name"],
+        "host_avatar": u.get("avatar", ""),
+        "created_at": int(time.time()),
+        "status": "live"
+    }
+
+    s.setdefault("streams", {})[channel_name] = stream_info
+
+    # Notify subscribers about the live stream
+    for email, user in s["users"].items():
+        if email != u["email"] and u["email"] in user.get("subscriptions", []):
+            s["notifications"].append({
+                "id": uuid.uuid4().hex,
+                "to": email,
+                "text": f"🔴 {u['name']} is LIVE now: {title}",
+                "channel": channel_name,
+                "created_at": int(time.time()),
+                "read": False
+            })
+
+    save_store(s)
+    return jsonify(
+        success=True,
+        channel=channel_name,
+        app_id=AGORA_APP_ID,
+        stream=stream_info
+    )
+
+@app.get("/api/streams")
+def list_streams():
+    """Get all active live streams."""
+    s = load_store()
+    active_streams = [
+        stream for stream in s.get("streams", {}).values() 
+        if stream.get("status") == "live"
+    ]
+    active_streams.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    return jsonify(streams=active_streams)
+
+@app.get("/api/stream/<channel_name>")
+def get_stream(channel_name):
+    """View details of a specific live stream channel."""
+    s = load_store()
+    stream = s.get("streams", {}).get(channel_name)
+    if not stream or stream.get("status") != "live":
+        return jsonify(error="Stream not found or ended."), 404
+    return jsonify(stream=stream, app_id=AGORA_APP_ID)
+
+@app.post("/api/stream/<channel_name>/end")
+@login_required
+def end_stream(channel_name):
+    """End a live stream."""
+    s = load_store()
+    u = current_user(s)
+    stream = s.get("streams", {}).get(channel_name)
+    if not stream:
+        return jsonify(error="Stream not found."), 404
+    if stream.get("host_email") != u["email"] and not u.get("is_admin"):
+        return jsonify(error="Only host can end the stream."), 403
+
+    stream["status"] = "ended"
+    stream["ended_at"] = int(time.time())
+    save_store(s)
+    return jsonify(success=True, message="Stream ended successfully.")
+
+# ----------------- USER & VIDEO APIS -----------------
+
 @app.get("/api/me")
 def me():
     s = load_store()
-    return jsonify(user=public_user(current_user(s)), admin_email=ADMIN_EMAIL)
+    return jsonify(user=public_user(current_user(s)), admin_email=ADMIN_EMAIL, agora_app_id=AGORA_APP_ID)
 
 @app.post("/api/register")
 def register():
@@ -193,7 +289,6 @@ def media(filename):
 @app.get("/api/video/<vid>/download")
 @login_required
 def download_own_video(vid):
-    """Download only the signed-in creator's own upload as an attachment."""
     s = load_store(); u = current_user(s); v = s["videos"].get(vid)
     if not v or v.get("owner") != u.get("email"):
         return jsonify(error="For creator safety, you can download only your own uploads."), 403
@@ -267,10 +362,8 @@ def channel(email):
     return jsonify(channel=public_user(u),videos=vids,subscribers=sum(email in x.get("subscriptions",[]) for x in s["users"].values()),
                    subscribed=bool(current_user(s) and email in current_user(s).get("subscriptions",[])))
 
-
 @app.get("/api/channels")
 def channels():
-    """Search public channels by channel name or email."""
     s = load_store()
     q = request.args.get("q", "").strip().lower()
     rows = []
@@ -293,7 +386,6 @@ def channels():
 @app.patch("/api/video/<vid>")
 @login_required
 def edit_own_video(vid):
-    """Edit metadata for a video owned by the signed-in user."""
     s = load_store()
     u = current_user(s)
     v = s["videos"].get(vid)
@@ -320,7 +412,6 @@ def edit_own_video(vid):
 @app.delete("/api/video/<vid>")
 @login_required
 def delete_own_video(vid):
-    """Delete a video owned by the signed-in user."""
     s = load_store()
     u = current_user(s)
     v = s["videos"].get(vid)
@@ -378,54 +469,4 @@ def read_notifications():
 @login_required
 def history():
     s=load_store(); u=current_user(s)
-    return jsonify(videos=[video_public(s["videos"][i],s) for i in u.get("history",[]) if i in s["videos"]])
-
-@app.get("/api/admin/overview")
-@admin_required
-def admin_overview():
-    s=load_store()
-    return jsonify(users=[public_user(u) for u in s["users"].values()],
-                   videos=[video_public(v,s) for v in s["videos"].values()],
-                   total_views=sum(v.get("views",0) for v in s["videos"].values()))
-
-@app.post("/api/admin/user/<email>/block")
-@admin_required
-def admin_block(email):
-    s=load_store(); u=s["users"].get(email.lower())
-    if not u: return jsonify(error="User not found."),404
-    if u.get("is_admin"): return jsonify(error="Cannot block the admin account."),400
-    u["blocked"]=not u.get("blocked",False); save_store(s)
-    return jsonify(blocked=u["blocked"])
-
-@app.post("/api/admin/video/<vid>/restrict")
-@admin_required
-def admin_restrict(vid):
-    s=load_store(); v=s["videos"].get(vid)
-    if not v: return jsonify(error="Video not found."),404
-    v["restricted"]=not v.get("restricted",False); save_store(s)
-    return jsonify(restricted=v["restricted"])
-
-@app.delete("/api/admin/video/<vid>")
-@admin_required
-def admin_delete_video(vid):
-    s=load_store(); v=s["videos"].pop(vid,None)
-    if not v: return jsonify(error="Video not found."),404
-    for name in (v.get("filename"),v.get("thumbnail")):
-        if name:
-            try: os.remove(os.path.join(UPLOADS,name))
-            except OSError: pass
-    s["comments"].pop(vid,None); save_store(s); return jsonify(ok=True)
-
-@app.get("/api/admin/events")
-@admin_required
-def admin_events():
-    s=load_store()
-    return jsonify(events=[{"email":u["email"],"name":u["name"],"blocked":u.get("blocked",False)} for u in s["users"].values()],
-                   uploads=[{"id":v["id"],"owner":v["owner"],"title":v["title"],"created_at":v["created_at"]} for v in s["videos"].values()])
-
-@app.get("/api/health")
-def health():
-    return jsonify(ok=True, app="Murshid Developer", storage="JSON file", admin_email=ADMIN_EMAIL)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT","5000")), debug=False, threaded=True)
+    return jsonify(videos=[video_public(s["videos"][i],s)

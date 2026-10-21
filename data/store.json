@@ -37,6 +37,7 @@
       "disliked": [],
       "history": [
         "9e25a5568c77478bb91dc604d1648114",
+        "d065354dbb2d41d7936f43c1418530c2",
         "764fd8144c5747b3bbfe3b3b90b563b0"
       ],
       "private_videos": []
@@ -56,7 +57,7 @@
       "private": false,
       "restricted": false,
       "created_at": 1792550732,
-      "views": 9,
+      "views": 10,
       "likes": [],
       "dislikes": [
         "sk8215256@gmail.com"
@@ -142,7 +143,7 @@
       "private": false,
       "restricted": false,
       "created_at": 1792552326,
-      "views": 2,
+      "views": 3,
       "likes": [
         "dbibi698@gmail.com"
       ],
@@ -184,7 +185,40 @@
       "video_id": "9e25a5568c77478bb91dc604d1648114",
       "created_at": 1792552525,
       "read": false
+    },
+    {
+      "id": "c699f3df1b1a4c9a9586c58bff163cd4",
+      "to": "dbibi698@gmail.com",
+      "text": "Dali Bibi subscribed to your channel",
+      "created_at": 1792556250,
+      "read": false
     }
   ],
-  "events": []
+  "events": [],
+  "live_rooms": {
+    "mdlive_5545f27615a045c8a1fa": {
+      "channel": "mdlive_5545f27615a045c8a1fa",
+      "owner": "sk8215256@gmail.com",
+      "title": "hi hello",
+      "active": false,
+      "started_at": 1792556003,
+      "viewers": 0,
+      "mode": "screen",
+      "ended_at": 1792556005
+    },
+    "mdlive_d1935b3ec7234842a65a": {
+      "channel": "mdlive_d1935b3ec7234842a65a",
+      "owner": "sk8215256@gmail.com",
+      "title": "hi hello",
+      "active": false,
+      "started_at": 1792556006,
+      "viewers": 0,
+      "mode": "camera",
+      "ended_at": 1792556008
+    }
+  },
+  "live_chat": {
+    "mdlive_5545f27615a045c8a1fa": [],
+    "mdlive_d1935b3ec7234842a65a": []
+  }
 }
